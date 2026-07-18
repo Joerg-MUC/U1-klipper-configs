@@ -10,3 +10,4 @@ I just have a U1 and I'm happy to share what I did to mine, YMMV but always: [RT
 # Things I did
 
 - [Spoolman](spoolman/README.md) configuration for U1 multitool
+- [SpoolLink Bridge](spoollink_bridge/README.md) — automatic RFID → Spoolman integration (tag scanned = spool activated)
