@@ -5,46 +5,96 @@ Drop-in replacement for /usr/local/share/openrfid/filament/generic.py on the
 Snapmaker U1 with PAXX CFW.
 
 Patch: adds _derive_material_type() to normalise non-standard filament type
-strings (e.g. "PLA+", "PETG-RAPID") to the closest VALID_BASE_MATERIALS entry
-before GenericFilament.__init__ raises ValueError.
+strings (e.g. "PLA+", "ABS+", "PETG-RAPID") to a valid VALID_BASE_MATERIALS
+entry before GenericFilament.__init__ raises ValueError.
 
 Without this patch, any tag whose type field is not in VALID_BASE_MATERIALS
-(PLA+, ABS+, PETG+, … are common examples from Spoolman's predefined filaments)
 causes OpenRFID to fire tag_parse_error instead of tag_read — so
 success_exporter never runs and the U1 GUI receives no filament data.
+
+Config file (optional):
+  /oem/printer_data/config/extended/openrfid_type_normalizer.cfg
+  If the file does not exist, only the user map (Step 0) and exact match
+  (Step 1) are active. Steps 2 and 3 default to OFF.
 
 Upstream: https://github.com/suchmememanyskill/OpenRFID  (src/filament/generic.py)
 Base SHA:  ddd1609e9abe9cd37c4b8fa1a0e4307b976d5fd4  (PAXX v1.4.1 + v1.5.2 identical)
 """
+import configparser
 import hashlib
 import logging
+import os
 from .valid_materials import VALID_BASE_MATERIALS
+
+
+_CONFIG_PATH = "/oem/printer_data/config/extended/openrfid_type_normalizer.cfg"
+
+
+def _load_normalizer_config():
+    """
+    Load type normaliser config from _CONFIG_PATH.
+    Returns (user_map, strip_plus_enabled, prefix_match_enabled).
+    If the file does not exist all features default to OFF / empty.
+    """
+    if not os.path.exists(_CONFIG_PATH):
+        return {}, False, False
+
+    cfg = configparser.ConfigParser()
+    cfg.read(_CONFIG_PATH)
+
+    opts = cfg["material_type_normalizer"] if "material_type_normalizer" in cfg else {}
+    strip_plus    = cfg.getboolean("material_type_normalizer", "strip_plus",    fallback=False)
+    prefix_match  = cfg.getboolean("material_type_normalizer", "prefix_match",  fallback=False)
+
+    user_map = dict(cfg["material_type_map"]) if "material_type_map" in cfg else {}
+    # Normalise keys to uppercase to match the .upper() applied by tag processors
+    user_map = {k.upper(): v for k, v in user_map.items()}
+
+    logging.info(
+        f"OpenRFID type normaliser: loaded {len(user_map)} map entries, "
+        f"strip_plus={strip_plus}, prefix_match={prefix_match}"
+    )
+    return user_map, strip_plus, prefix_match
+
+
+# Loaded once at module import (= OpenRFID start). Cold start required after config changes.
+_USER_MAP, _STRIP_PLUS, _PREFIX_MATCH = _load_normalizer_config()
 
 
 def _derive_material_type(raw: str):
     """
-    Derive the closest VALID_BASE_MATERIALS entry from a non-standard type string.
+    Attempt to derive a valid VALID_BASE_MATERIALS entry from a non-standard type string.
 
-    Three-step algorithm — no lookup table needed:
-      1. Exact match                         PLA-CF  → PLA-CF  (no change)
-      2. Strip trailing '+'                  PLA+    → PLA
-                                             ABS+    → ABS
-      3. Longest-prefix match                PETG-RAPID → PETG
-         (sorted desc so PLA-CF beats PLA)   PLA-SUPER  → PLA
+    Resolution order:
+      Step 1  Exact match against VALID_BASE_MATERIALS          (always active)
+      Step 0  User map from openrfid_type_normalizer.cfg        (active when file exists)
+      Step 2  Strip trailing '+': ABS+ → ABS                   (config: strip_plus = on)
+      Step 3  Longest-prefix match: PETG-RAPID → PETG          (config: prefix_match = on)
 
-    Returns the derived type string, or None if nothing matches.
+    Returns the resolved type string, or None if nothing matches.
     """
-    # 1. already valid
+    # Step 1: exact match — no normalisation needed
     if raw in VALID_BASE_MATERIALS:
         return raw
-    # 2. trailing '+' (PLA+ → PLA, PETG+ → PETG, ABS+ → ABS)
+
+    # Step 0: explicit user map — takes priority over algorithmic steps
+    if raw in _USER_MAP:
+        return _USER_MAP[raw]
+
+    # Precompute stripped form used by steps 2 and 3
     stripped = raw.rstrip('+')
-    if stripped in VALID_BASE_MATERIALS:
+
+    # Step 2: strip trailing '+' (ABS+ → ABS, PLA+ → PLA, PETG+ → PETG)
+    if _STRIP_PLUS and stripped in VALID_BASE_MATERIALS:
         return stripped
-    # 3. longest-prefix match
-    for valid in sorted(VALID_BASE_MATERIALS, key=len, reverse=True):
-        if raw.startswith(valid) or stripped.startswith(valid):
-            return valid
+
+    # Step 3: longest-prefix match (PETG-RAPID → PETG, PLA-SUPER → PLA)
+    #         Sort descending by length so PLA-CF beats PLA.
+    if _PREFIX_MATCH:
+        for valid in sorted(VALID_BASE_MATERIALS, key=len, reverse=True):
+            if raw.startswith(valid) or stripped.startswith(valid):
+                return valid
+
     return None
 
 
