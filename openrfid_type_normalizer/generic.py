@@ -42,9 +42,8 @@ def _load_normalizer_config():
     with open(_CONFIG_PATH, "r") as f:
         cfg = yaml.safe_load(f) or {}
 
-    opts        = cfg.get("options") or {}
-    strip_plus  = bool(opts.get("strip_plus",   False))
-    prefix_match = bool(opts.get("prefix_match", False))
+    strip_plus   = bool(cfg.get("strip_plus",   False))
+    prefix_match = bool(cfg.get("prefix_match", False))
 
     # Normalise keys to uppercase to match the .upper() applied by tag processors
     raw_map  = cfg.get("type_map") or {}

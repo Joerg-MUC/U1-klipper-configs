@@ -50,15 +50,20 @@ in `/oem/printer_data/logs/openrfid.log`.
 ```
 
 ```yaml
-options:
-  strip_plus: true     # Step 3
-  prefix_match: true   # Step 4
+# Strip trailing '+' from filament type before matching (Step 3)
+# Options: true, false
+strip_plus: true
 
-# Step 2 — explicit overrides, checked before algorithmic steps.
-# Values must be valid entries from VALID_BASE_MATERIALS.
+# Match filament type against longest valid prefix (Step 4)
+# Options: true, false
+prefix_match: true
+
+# Explicit type mapping, checked before algorithmic steps (Step 2)
+# Values must be valid entries from VALID_BASE_MATERIALS
+# type_map:
+#   ABS-PLUS: ABS
+#   SILK-PLA: PLA
 type_map:
-  # ABS-PLUS: ABS
-  # SILK-PLA: PLA
 ```
 
 A cold start is required after any config change (OpenRFID loads the config once
