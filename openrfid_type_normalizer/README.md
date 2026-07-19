@@ -28,9 +28,9 @@ When validation fails:
 | Step | What | Active |
 |------|------|--------|
 | 1 | Exact match against `VALID_BASE_MATERIALS` | Always |
-| 2 | Explicit user map (`[material_type_map]` in config file) | When config file exists |
-| 3 | Strip trailing `+`: `ABS+` → `ABS` | `strip_plus = on` in config |
-| 4 | Longest-prefix match: `PETG-RAPID` → `PETG` | `prefix_match = on` in config |
+| 2 | Explicit user map (`type_map` in config file) | When config file exists |
+| 3 | Strip trailing `+`: `ABS+` → `ABS` | `strip_plus: true` in config |
+| 4 | Longest-prefix match: `PETG-RAPID` → `PETG` | `prefix_match: true` in config |
 
 **If the config file does not exist:** only Steps 1 and 2 are active (Step 2 with
 an empty map = no-op). Steps 3 and 4 default to OFF. Unknown types still raise
@@ -49,16 +49,16 @@ in `/oem/printer_data/logs/openrfid.log`.
 /oem/printer_data/config/extended/openrfid_type_normalizer.cfg
 ```
 
-```ini
-[material_type_normalizer]
-strip_plus   = on    # Step 2
-prefix_match = on    # Step 3
+```yaml
+options:
+  strip_plus: true     # Step 3
+  prefix_match: true   # Step 4
 
-[material_type_map]
-# Explicit overrides — checked before algorithmic steps (Step 0).
-# Values must be entries from VALID_BASE_MATERIALS.
-# ABS-PLUS = ABS
-# SILK-PLA = PLA
+# Step 2 — explicit overrides, checked before algorithmic steps.
+# Values must be valid entries from VALID_BASE_MATERIALS.
+type_map:
+  # ABS-PLUS: ABS
+  # SILK-PLA: PLA
 ```
 
 A cold start is required after any config change (OpenRFID loads the config once

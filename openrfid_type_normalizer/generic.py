@@ -20,10 +20,10 @@ Config file (optional):
 Upstream: https://github.com/suchmememanyskill/OpenRFID  (src/filament/generic.py)
 Base SHA:  ddd1609e9abe9cd37c4b8fa1a0e4307b976d5fd4  (PAXX v1.4.1 + v1.5.2 identical)
 """
-import configparser
 import hashlib
 import logging
 import os
+import yaml
 from .valid_materials import VALID_BASE_MATERIALS
 
 
@@ -39,16 +39,16 @@ def _load_normalizer_config():
     if not os.path.exists(_CONFIG_PATH):
         return {}, False, False
 
-    cfg = configparser.ConfigParser()
-    cfg.read(_CONFIG_PATH)
+    with open(_CONFIG_PATH, "r") as f:
+        cfg = yaml.safe_load(f) or {}
 
-    opts = cfg["material_type_normalizer"] if "material_type_normalizer" in cfg else {}
-    strip_plus    = cfg.getboolean("material_type_normalizer", "strip_plus",    fallback=False)
-    prefix_match  = cfg.getboolean("material_type_normalizer", "prefix_match",  fallback=False)
+    opts        = cfg.get("options") or {}
+    strip_plus  = bool(opts.get("strip_plus",   False))
+    prefix_match = bool(opts.get("prefix_match", False))
 
-    user_map = dict(cfg["material_type_map"]) if "material_type_map" in cfg else {}
     # Normalise keys to uppercase to match the .upper() applied by tag processors
-    user_map = {k.upper(): v for k, v in user_map.items()}
+    raw_map  = cfg.get("type_map") or {}
+    user_map = {str(k).upper(): str(v) for k, v in raw_map.items()}
 
     logging.info(
         f"OpenRFID type normaliser: loaded {len(user_map)} map entries, "
