@@ -70,31 +70,31 @@ def _derive_material_type(raw: str):
       Step 3  Strip trailing '+': ABS+ → ABS                   (config: strip_plus = on)
       Step 4  Longest-prefix match: PETG-RAPID → PETG          (config: prefix_match = on)
 
-    Returns the resolved type string, or None if nothing matches.
+    Returns (derived_type, via) where via is the step name, or (None, None) if unresolvable.
     """
     # Step 1: exact match — no normalisation needed
     if raw in VALID_BASE_MATERIALS:
-        return raw
+        return raw, None
 
     # Step 2: explicit user map — takes priority over algorithmic steps
     if raw in _USER_MAP:
-        return _USER_MAP[raw]
+        return _USER_MAP[raw], "type_map"
 
     # Precompute stripped form used by steps 3 and 4
     stripped = raw.rstrip('+')
 
     # Step 3: strip trailing '+' (ABS+ → ABS, PLA+ → PLA, PETG+ → PETG)
     if _STRIP_PLUS and stripped in VALID_BASE_MATERIALS:
-        return stripped
+        return stripped, "strip_plus"
 
     # Step 4: longest-prefix match (PETG-RAPID → PETG, PLA-SUPER → PLA)
     #         Sort descending by length so PLA-CF beats PLA.
     if _PREFIX_MATCH:
         for valid in sorted(VALID_BASE_MATERIALS, key=len, reverse=True):
             if raw.startswith(valid) or stripped.startswith(valid):
-                return valid
+                return valid, "prefix_match"
 
-    return None
+    return None, None
 
 
 def to_rgba(argb: int) -> int:
@@ -149,11 +149,11 @@ class GenericFilament:
             self.modifiers.remove("GF")
 
         if self.type not in VALID_BASE_MATERIALS:
-            derived = _derive_material_type(self.type)
+            derived, via = _derive_material_type(self.type)
             if derived:
                 logging.warning(
                     f"OpenRFID: non-standard filament type '{self.type}' "
-                    f"normalised to '{derived}'"
+                    f"normalised to '{derived}' (via {via})"
                 )
                 self.type = derived
             else:
