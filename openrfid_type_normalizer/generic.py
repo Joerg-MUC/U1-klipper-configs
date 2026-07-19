@@ -1,24 +1,24 @@
 """
-OpenRFID — filament/generic.py (patched)
-=========================================
+OpenRFID — filament/generic.py (patched for PAXX CFW)
+=======================================================
 Drop-in replacement for /usr/local/share/openrfid/filament/generic.py on the
 Snapmaker U1 with PAXX CFW.
 
-Patch: adds _derive_material_type() to normalise non-standard filament type
-strings (e.g. "PLA+", "ABS+", "PETG-RAPID") to a valid VALID_BASE_MATERIALS
-entry before GenericFilament.__init__ raises ValueError.
-
-Without this patch, any tag whose type field is not in VALID_BASE_MATERIALS
-causes OpenRFID to fire tag_parse_error instead of tag_read — so
-success_exporter never runs and the U1 GUI receives no filament data.
-
-Config file (optional):
-  /oem/printer_data/config/extended/openrfid_type_normalizer.cfg
-  If the file does not exist, only Steps 1 and 2 are active (Step 2 with an
-  empty map = no-op). Steps 3 and 4 default to OFF.
-
 Upstream: https://github.com/suchmememanyskill/OpenRFID  (src/filament/generic.py)
+Upstream PR: feat/filament-type-normalizer (Joerg-MUC/OpenRFID)
 Base SHA:  ddd1609e9abe9cd37c4b8fa1a0e4307b976d5fd4  (PAXX v1.4.1 + v1.5.2 identical)
+
+Difference from upstream:
+  Upstream calls init_type_normalizer() from main.py after loading Configuration.
+  On PAXX CFW, main.py is part of the firmware and not easily patched, so this
+  file loads its config from a YAML file instead:
+
+    /oem/printer_data/config/extended/openrfid_type_normalizer.cfg
+
+  _load_normalizer_config() reads that file and calls init_type_normalizer()
+  at module import time. Everything else — init_type_normalizer(),
+  _derive_material_type(), and the GenericFilament change — is identical to
+  the upstream PR.
 """
 import hashlib
 import logging
@@ -27,17 +27,66 @@ import yaml
 from .valid_materials import VALID_BASE_MATERIALS
 
 
+# ---------------------------------------------------------------------------
+# Filament type normaliser
+# ---------------------------------------------------------------------------
+# Resolves non-standard filament type strings (e.g. "PLA+", "ABS+",
+# "PETG-RAPID") to a valid VALID_BASE_MATERIALS entry before GenericFilament
+# raises ValueError.
+#
+# Many real-world tags — including Spoolman's predefined filament database —
+# use type strings that are not in VALID_BASE_MATERIALS. Without normalisation
+# any such tag causes OpenRFID to fire tag_parse_error instead of tag_read,
+# so exporters never receive filament data.
+#
+# Resolution order:
+#   Step 1  Exact match against VALID_BASE_MATERIALS          (always active)
+#   Step 2  Explicit type_map from configuration              (always active when set)
+#   Step 3  Strip trailing '+': ABS+ → ABS                   (type_normalizer_strip_plus = true)
+#   Step 4  Longest-prefix match: PETG-RAPID → PETG          (type_normalizer_prefix_match = on)
+#
+# On PAXX CFW, config is loaded from:
+#   /oem/printer_data/config/extended/openrfid_type_normalizer.cfg
+# If the file does not exist, all steps default to OFF (Steps 3 and 4).
+# A cold start is required after any config change.
+# ---------------------------------------------------------------------------
+
+_USER_MAP:     dict[str, str] = {}
+_STRIP_PLUS:   bool = False
+_PREFIX_MATCH: bool = False
+
 _CONFIG_PATH = "/oem/printer_data/config/extended/openrfid_type_normalizer.cfg"
 
 
-def _load_normalizer_config():
+def init_type_normalizer(
+    type_map:     dict[str, str],
+    strip_plus:   bool,
+    prefix_match: bool,
+) -> None:
     """
-    Load type normaliser config from _CONFIG_PATH.
-    Returns (user_map, strip_plus_enabled, prefix_match_enabled).
-    If the file does not exist all features default to OFF / empty.
+    Initialise module-level normaliser state.
+
+    Upstream: called from main.py after loading Configuration.
+    PAXX CFW:  called from _load_normalizer_config() at module import time.
+    """
+    global _USER_MAP, _STRIP_PLUS, _PREFIX_MATCH
+    _USER_MAP     = type_map
+    _STRIP_PLUS   = strip_plus
+    _PREFIX_MATCH = prefix_match
+    logging.info(
+        f"OpenRFID type normaliser: {len(_USER_MAP)} map entries, "
+        f"strip_plus={_STRIP_PLUS}, prefix_match={_PREFIX_MATCH}"
+    )
+
+
+def _load_normalizer_config() -> None:
+    """
+    PAXX CFW shim: load normaliser config from YAML and call init_type_normalizer().
+    If the file does not exist, normaliser defaults to empty map / all steps OFF.
     """
     if not os.path.exists(_CONFIG_PATH):
-        return {}, False, False
+        init_type_normalizer({}, False, False)
+        return
 
     with open(_CONFIG_PATH, "r") as f:
         cfg = yaml.safe_load(f) or {}
@@ -45,50 +94,38 @@ def _load_normalizer_config():
     strip_plus   = bool(cfg.get("strip_plus",   False))
     prefix_match = bool(cfg.get("prefix_match", False))
 
-    # Normalise keys to uppercase to match the .upper() applied by tag processors
     raw_map  = cfg.get("type_map") or {}
     user_map = {str(k).upper(): str(v) for k, v in raw_map.items()}
 
-    logging.info(
-        f"OpenRFID type normaliser: loaded {len(user_map)} map entries, "
-        f"strip_plus={strip_plus}, prefix_match={prefix_match}"
-    )
-    return user_map, strip_plus, prefix_match
+    init_type_normalizer(user_map, strip_plus, prefix_match)
 
 
-# Loaded once at module import (= OpenRFID start). Cold start required after config changes.
-_USER_MAP, _STRIP_PLUS, _PREFIX_MATCH = _load_normalizer_config()
+# Load config once at module import (= OpenRFID start).
+# Cold start required after config changes.
+_load_normalizer_config()
 
 
-def _derive_material_type(raw: str):
+def _derive_material_type(raw: str) -> tuple[str | None, str | None]:
     """
     Attempt to derive a valid VALID_BASE_MATERIALS entry from a non-standard type string.
 
-    Resolution order:
-      Step 1  Exact match against VALID_BASE_MATERIALS          (always active)
-      Step 2  User map from openrfid_type_normalizer.cfg        (active when file exists)
-      Step 3  Strip trailing '+': ABS+ → ABS                   (config: strip_plus = on)
-      Step 4  Longest-prefix match: PETG-RAPID → PETG          (config: prefix_match = on)
-
-    Returns (derived_type, via) where via is the step name, or (None, None) if unresolvable.
+    Returns (derived_type, step_name) or (None, None) if unresolvable.
     """
-    # Step 1: exact match — no normalisation needed
+    # Step 1: already valid — no normalisation needed
     if raw in VALID_BASE_MATERIALS:
         return raw, None
 
-    # Step 2: explicit user map — takes priority over algorithmic steps
+    # Step 2: explicit user map
     if raw in _USER_MAP:
         return _USER_MAP[raw], "type_map"
 
-    # Precompute stripped form used by steps 3 and 4
     stripped = raw.rstrip('+')
 
-    # Step 3: strip trailing '+' (ABS+ → ABS, PLA+ → PLA, PETG+ → PETG)
+    # Step 3: strip trailing '+'
     if _STRIP_PLUS and stripped in VALID_BASE_MATERIALS:
         return stripped, "strip_plus"
 
-    # Step 4: longest-prefix match (PETG-RAPID → PETG, PLA-SUPER → PLA)
-    #         Sort descending by length so PLA-CF beats PLA.
+    # Step 4: longest-prefix match
     if _PREFIX_MATCH:
         for valid in sorted(VALID_BASE_MATERIALS, key=len, reverse=True):
             if raw.startswith(valid) or stripped.startswith(valid):
