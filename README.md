@@ -11,3 +11,4 @@ I just have a U1 and I'm happy to share what I did to mine, YMMV but always: [RT
 
 - [Spoolman](spoolman/README.md) configuration for U1 multitool
 - [SpoolLink Bridge](spoollink_bridge/README.md) — automatic RFID → Spoolman integration (tag scanned = spool activated)
+- [OpenRFID Type Normalizer](openrfid_type_normalizer/README.md) — patch for OpenRFID that normalises non-standard filament types (PLA+, ABS+, …) so `success_exporter` doesn't silently fail
