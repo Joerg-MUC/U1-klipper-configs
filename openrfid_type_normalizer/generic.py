@@ -14,8 +14,8 @@ success_exporter never runs and the U1 GUI receives no filament data.
 
 Config file (optional):
   /oem/printer_data/config/extended/openrfid_type_normalizer.cfg
-  If the file does not exist, only the user map (Step 0) and exact match
-  (Step 1) are active. Steps 2 and 3 default to OFF.
+  If the file does not exist, only Steps 1 and 2 are active (Step 2 with an
+  empty map = no-op). Steps 3 and 4 default to OFF.
 
 Upstream: https://github.com/suchmememanyskill/OpenRFID  (src/filament/generic.py)
 Base SHA:  ddd1609e9abe9cd37c4b8fa1a0e4307b976d5fd4  (PAXX v1.4.1 + v1.5.2 identical)
@@ -67,9 +67,9 @@ def _derive_material_type(raw: str):
 
     Resolution order:
       Step 1  Exact match against VALID_BASE_MATERIALS          (always active)
-      Step 0  User map from openrfid_type_normalizer.cfg        (active when file exists)
-      Step 2  Strip trailing '+': ABS+ → ABS                   (config: strip_plus = on)
-      Step 3  Longest-prefix match: PETG-RAPID → PETG          (config: prefix_match = on)
+      Step 2  User map from openrfid_type_normalizer.cfg        (active when file exists)
+      Step 3  Strip trailing '+': ABS+ → ABS                   (config: strip_plus = on)
+      Step 4  Longest-prefix match: PETG-RAPID → PETG          (config: prefix_match = on)
 
     Returns the resolved type string, or None if nothing matches.
     """
@@ -77,18 +77,18 @@ def _derive_material_type(raw: str):
     if raw in VALID_BASE_MATERIALS:
         return raw
 
-    # Step 0: explicit user map — takes priority over algorithmic steps
+    # Step 2: explicit user map — takes priority over algorithmic steps
     if raw in _USER_MAP:
         return _USER_MAP[raw]
 
-    # Precompute stripped form used by steps 2 and 3
+    # Precompute stripped form used by steps 3 and 4
     stripped = raw.rstrip('+')
 
-    # Step 2: strip trailing '+' (ABS+ → ABS, PLA+ → PLA, PETG+ → PETG)
+    # Step 3: strip trailing '+' (ABS+ → ABS, PLA+ → PLA, PETG+ → PETG)
     if _STRIP_PLUS and stripped in VALID_BASE_MATERIALS:
         return stripped
 
-    # Step 3: longest-prefix match (PETG-RAPID → PETG, PLA-SUPER → PLA)
+    # Step 4: longest-prefix match (PETG-RAPID → PETG, PLA-SUPER → PLA)
     #         Sort descending by length so PLA-CF beats PLA.
     if _PREFIX_MATCH:
         for valid in sorted(VALID_BASE_MATERIALS, key=len, reverse=True):

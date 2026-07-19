@@ -28,12 +28,12 @@ When validation fails:
 | Step | What | Active |
 |------|------|--------|
 | 1 | Exact match against `VALID_BASE_MATERIALS` | Always |
-| 0 | Explicit user map (`[material_type_map]` in config file) | When config file exists |
-| 2 | Strip trailing `+`: `ABS+` → `ABS` | `strip_plus = on` in config |
-| 3 | Longest-prefix match: `PETG-RAPID` → `PETG` | `prefix_match = on` in config |
+| 2 | Explicit user map (`[material_type_map]` in config file) | When config file exists |
+| 3 | Strip trailing `+`: `ABS+` → `ABS` | `strip_plus = on` in config |
+| 4 | Longest-prefix match: `PETG-RAPID` → `PETG` | `prefix_match = on` in config |
 
-**If the config file does not exist:** only Steps 1 and 0 are active (0 with an
-empty map = no-op). Steps 2 and 3 default to OFF. Unknown types still raise
+**If the config file does not exist:** only Steps 1 and 2 are active (Step 2 with
+an empty map = no-op). Steps 3 and 4 default to OFF. Unknown types still raise
 `ValueError` — no silent guessing without explicit opt-in.
 
 All normalisation is logged at `WARNING` level so every substitution is traceable
