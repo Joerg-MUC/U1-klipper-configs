@@ -9,6 +9,7 @@ automatically activates the matching spool in Spoolman — no manual selection n
 - Tag scanned by OpenRFID → webhook fires → Moonraker component looks up spool → `SET_ACTIVE_SPOOL`
 - Works with **any tag type** OpenRFID can read: Bambu/Snapmaker MiFare Classic (UID only), OpenSpool NTAG215, ELEGOO, Anycubic
 - Spoolman tracks filament consumption automatically from that point on
+- Filament loaded **without** a tag → OpenRFID fires `tag_not_present` after its retry window → the bridge clears that channel's spool assignment instead of leaving it pointed at whatever spool was tagged last (otherwise consumption keeps getting booked to the wrong, no-longer-loaded spool)
 
 **What it does NOT do:**
 - It does not change what the U1's touchscreen/Orca displays (that comes from the tag data itself, handled by OpenRFID's existing `success_exporter`)
@@ -44,6 +45,13 @@ OpenRFID (reads tag, fires webhooks)
        SET_GCODE_VARIABLE MACRO=T{ch} VARIABLE=spool_id VALUE={id}
        SAVE_CURRENT_SPOOLS
        SET_ACTIVE_SPOOL ID={id}
+```
+
+If no tag is found (filament loaded without one, or an unregistered tag), OpenRFID fires `tag_not_present` instead of `tag_read` after its retry window. The bridge handles this by clearing the channel's `spool_id` variable rather than leaving it stuck on the previous spool:
+
+```
+       SET_GCODE_VARIABLE MACRO=T{ch} VARIABLE=spool_id VALUE=None
+       SAVE_CURRENT_SPOOLS
 ```
 
 ---

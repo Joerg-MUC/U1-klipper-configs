@@ -55,11 +55,19 @@ class SpoolinkBridge:
         await self._ensure_card_uids_field()
 
     async def _handle_webhook(self, web_request: WebRequest) -> Dict[str, Any]:
-        """Receive OpenRFID webhook: {channel: int, card_uid: str}"""
+        """Receive OpenRFID webhook: {channel: int, card_uid: str}
+
+        An empty card_uid means OpenRFID fired tag_not_present — filament was
+        loaded but no tag was found (e.g. untagged spool). In that case we
+        clear the channel's spool assignment instead of leaving it pointing
+        at whatever spool was tagged last, which would otherwise keep
+        booking consumption to the wrong spool.
+        """
         channel: int = web_request.get_int("channel")
         card_uid: str = web_request.get_str("card_uid").strip().upper()
         if not card_uid:
-            raise self.server.error("Missing card_uid", 400)
+            await self._clear_spool(channel)
+            return {"spool_id": None}
         log.info("ch%d: card UID %s", channel, card_uid)
         spool = await self._find_spool(card_uid)
         if spool:
@@ -70,6 +78,18 @@ class SpoolinkBridge:
                 "extra.card_uids or SpoolKid app", channel, card_uid
             )
         return {"spool_id": spool["id"] if spool else None}
+
+    async def _clear_spool(self, channel: int) -> None:
+        """Clear the channel's persisted spool assignment (no tag present)."""
+        script = (
+            f"SET_GCODE_VARIABLE MACRO=T{channel} VARIABLE=spool_id VALUE=None\n"
+            f"SAVE_CURRENT_SPOOLS"
+        )
+        try:
+            await self.klippy_apis.run_gcode(script)
+            log.info("ch%d: no tag present, spool assignment cleared", channel)
+        except Exception as e:
+            log.error("ch%d: gcode failed: %s", channel, e)
 
     async def _find_spool(self, card_uid: str) -> Optional[dict]:
         """Look up spool by UID. Checks extra.card_uids first, then lot_nr."""
