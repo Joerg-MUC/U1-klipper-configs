@@ -9,7 +9,7 @@ automatically activates the matching spool in Spoolman — no manual selection n
 - Tag scanned by OpenRFID → webhook fires → Moonraker component looks up spool → `SET_ACTIVE_SPOOL`
 - Works with **any tag type** OpenRFID can read: Bambu/Snapmaker MiFare Classic (UID only), OpenSpool NTAG215, ELEGOO, Anycubic
 - Spoolman tracks filament consumption automatically from that point on
-- Filament loaded **without** a tag → OpenRFID fires `tag_not_present` after its retry window → the bridge clears that channel's spool assignment instead of leaving it pointed at whatever spool was tagged last (otherwise consumption keeps getting booked to the wrong, no-longer-loaded spool)
+- Filament physically removed from a channel → the bridge clears that channel's spool assignment, detected via Klipper's own `filament_feed` sensor (see [How it works](#how-it-works)) — not via RFID
 
 **What it does NOT do:**
 - It does not change what the U1's touchscreen/Orca displays (that comes from the tag data itself, handled by OpenRFID's existing `success_exporter`)
@@ -28,15 +28,17 @@ automatically activates the matching spool in Spoolman — no manual selection n
 
 ## How it works
 
+Setting an assignment and clearing one are handled by two independent, one-directional paths — a tag read only ever *sets*, the feed sensor only ever *clears*. Neither path can undo what the other one does.
+
 ```
 RFID Tag
    │
    ▼
-OpenRFID (reads tag, fires webhooks)
+OpenRFID (reads tag, fires webhook on tag_read only)
    │
    ├─► success_exporter → /printer/filament_detect/set   ← existing, updates U1 GUI
    │
-   └─► spoollink_bridge → /server/spoollink_bridge        ← NEW: this component
+   └─► spoollink_bridge → /server/spoollink_bridge        ← this component
             │
             ▼
        Spoolman lookup (by UID in extra.card_uids or lot_nr)
@@ -47,12 +49,20 @@ OpenRFID (reads tag, fires webhooks)
        SET_ACTIVE_SPOOL ID={id}
 ```
 
-If no tag is found (filament loaded without one, or an unregistered tag), OpenRFID fires `tag_not_present` instead of `tag_read` after its retry window. The bridge handles this by clearing the channel's `spool_id` variable rather than leaving it stuck on the previous spool:
-
 ```
+Klipper filament_feed{left,right}.extruderN.filament_detected
+   │
+   ▼
+Bridge polls this every 4s (independent of RFID entirely)
+   │
+   └─► True → False transition observed while running
+            │
+            ▼
        SET_GCODE_VARIABLE MACRO=T{ch} VARIABLE=spool_id VALUE=None
        SAVE_CURRENT_SPOOLS
 ```
+
+**Why clearing isn't driven by RFID:** an earlier version cleared on OpenRFID's `tag_not_present` event. That event fires both when filament is genuinely untagged *and* when a tag is physically present but a read attempt failed (e.g. a misaligned tag during the U1's automatic boot-time rescan) — the two cases are indistinguishable at the RFID layer alone. Clearing on it caused spurious un-assignments whenever a boot rescan happened to miss a read on an otherwise still-loaded, still-correct channel. The feed sensor has no such ambiguity — it only reports whether filament is physically present, so clearing on it can't misfire on a read error. On startup, the poller baselines against whatever is currently loaded (no assignment is cleared just because a channel happens to be empty when Moonraker starts) — only a transition observed *while the poller is running* triggers a clear.
 
 ---
 

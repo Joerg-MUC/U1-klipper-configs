@@ -8,6 +8,21 @@ When an NFC/RFID tag is scanned by OpenRFID, this component:
   2. Looks up the matching spool in Spoolman (via extra.card_uids or lot_nr)
   3. Calls SET_ACTIVE_SPOOL to update Klipper + Spoolman tracking
 
+Clearing a channel's spool assignment is handled separately from RFID: a
+background poll watches Klipper's `filament_feed` object (the U1's own
+mechanical filament-presence sensor) and clears the assignment only on a
+live True -> False transition, i.e. an observed physical unload. RFID
+events never clear an assignment, only ever set one on a successful read.
+
+This split exists because "no tag" is fundamentally ambiguous at the RFID
+layer alone: it cannot tell a genuinely untagged/unregistered spool apart
+from a transient read failure on a spool that is still physically loaded
+(e.g. a misaligned tag during a boot rescan). Clearing on tag_not_present
+(an earlier version of this component did exactly that) caused spurious
+un-assignments whenever a boot-time rescan happened to miss a read — see
+the project history for the incidents that led to this design. The feed
+sensor has no such ambiguity: it only reports physical presence.
+
 UID Registration (two supported formats):
   - extra.card_uids  : preferred (SpoolLink-native, comma-separated UIDs)
   - lot_nr           : SpoolKid app format ("card_uid:UID[,card_uid:UID2]")
@@ -34,6 +49,19 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# How often the physical feed state is polled to detect a genuine filament
+# unload (independent of RFID). A spool change takes several seconds in
+# practice (remove, load new spool, feed filament) — no need to poll faster.
+FEED_POLL_INTERVAL_SEC = 4.0
+
+# Channel -> (feed object name, extruder key), matches the U1's 4 toolheads.
+_FEED_OBJECTS = {
+    0: ("filament_feed left", "extruder0"),
+    1: ("filament_feed left", "extruder1"),
+    2: ("filament_feed right", "extruder2"),
+    3: ("filament_feed right", "extruder3"),
+}
+
 
 class SpoolinkBridge:
     def __init__(self, config: ConfigHelper) -> None:
@@ -49,25 +77,67 @@ class SpoolinkBridge:
             RequestType.POST,
             self._handle_webhook,
         )
+
+        self._last_detected: Dict[int, bool] = {}
+        eventloop = self.server.get_event_loop()
+        self._feed_poll_timer = eventloop.register_timer(self._check_feed_state)
+        self.server.register_event_handler(
+            "server:klippy_ready", self._handle_klippy_ready
+        )
+
         log.info("SpoolLink Bridge: endpoint /server/spoollink_bridge registered")
 
     async def component_init(self) -> None:
         await self._ensure_card_uids_field()
 
+    async def _handle_klippy_ready(self) -> None:
+        # Start with an empty baseline on every (re)connect so a channel
+        # that is already empty at startup is never mistaken for one that
+        # was "just" unloaded. Only a transition observed while the poller
+        # is running triggers a clear.
+        self._last_detected.clear()
+        self._feed_poll_timer.start(delay=FEED_POLL_INTERVAL_SEC)
+        log.info(
+            "SpoolLink Bridge: feed-state polling started (every %.1fs)",
+            FEED_POLL_INTERVAL_SEC,
+        )
+
+    async def _check_feed_state(self, eventtime: float) -> float:
+        try:
+            status = await self.klippy_apis.query_objects(
+                {"filament_feed left": None, "filament_feed right": None}
+            )
+        except Exception as e:
+            log.error("SpoolLink Bridge: feed poll failed: %s", e)
+            return eventtime + FEED_POLL_INTERVAL_SEC
+
+        for channel, (feed_obj, extruder_key) in _FEED_OBJECTS.items():
+            e_status = status.get(feed_obj, {}).get(extruder_key, {})
+            detected = bool(e_status.get("filament_detected", False))
+            prev = self._last_detected.get(channel)
+            if prev is True and detected is False:
+                log.info(
+                    "ch%d: filament physically removed (feed module), "
+                    "clearing spool assignment", channel
+                )
+                await self._clear_spool(channel)
+            self._last_detected[channel] = detected
+
+        return eventtime + FEED_POLL_INTERVAL_SEC
+
     async def _handle_webhook(self, web_request: WebRequest) -> Dict[str, Any]:
         """Receive OpenRFID webhook: {channel: int, card_uid: str}
 
-        An empty card_uid means OpenRFID fired tag_not_present — filament was
-        loaded but no tag was found (e.g. untagged spool). In that case we
-        clear the channel's spool assignment instead of leaving it pointing
-        at whatever spool was tagged last, which would otherwise keep
-        booking consumption to the wrong spool.
+        Only fires on a successful tag_read (see openrfid_webhook_addition.cfg
+        — `event = tag_read`, not `tag_not_present`). A missing or unmatched
+        UID here means nothing: it is never used to clear an assignment,
+        because a failed/missing read can't be told apart from genuinely
+        untagged filament at this layer. See module docstring.
         """
         channel: int = web_request.get_int("channel")
         card_uid: str = web_request.get_str("card_uid").strip().upper()
         if not card_uid:
-            await self._clear_spool(channel)
-            return {"spool_id": None}
+            raise self.server.error("Missing card_uid", 400)
         log.info("ch%d: card UID %s", channel, card_uid)
         spool = await self._find_spool(card_uid)
         if spool:
@@ -80,14 +150,14 @@ class SpoolinkBridge:
         return {"spool_id": spool["id"] if spool else None}
 
     async def _clear_spool(self, channel: int) -> None:
-        """Clear the channel's persisted spool assignment (no tag present)."""
+        """Clear the channel's persisted spool assignment."""
         script = (
             f"SET_GCODE_VARIABLE MACRO=T{channel} VARIABLE=spool_id VALUE=None\n"
             f"SAVE_CURRENT_SPOOLS"
         )
         try:
             await self.klippy_apis.run_gcode(script)
-            log.info("ch%d: no tag present, spool assignment cleared", channel)
+            log.info("ch%d: spool assignment cleared", channel)
         except Exception as e:
             log.error("ch%d: gcode failed: %s", channel, e)
 
